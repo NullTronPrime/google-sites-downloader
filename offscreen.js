@@ -19,28 +19,37 @@ function openDB() {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CACHE_IMAGE') {
-    cacheImage(msg.data);
+    cacheImage(msg.data).then(() => {
+      sendResponse({ success: true });
+    }).catch(err => {
+      console.error('Cache error:', err);
+      sendResponse({ success: false });
+    });
+    return true;
   } else if (msg.type === 'DB_OPERATION') {
     handleDBOperation(msg.operation, msg.data).then(sendResponse);
-    return true; // Keep channel open
+    return true;
   }
 });
 
-async function cacheImage({ url, hash, arrayBuffer, mimeType, ext, metadata }) {
-  try {
-    const db = await openDB();
-    const tx = db.transaction(STORE, "readwrite");
-    // Store as arrayBuffer to preserve binary data
-    await tx.objectStore(STORE).put({ 
+async function cacheImage({ hash, arrayBuffer, mimeType, ext, metadata }) {
+  const db = await openDB();
+  const tx = db.transaction(STORE, "readwrite");
+  
+  return new Promise((resolve, reject) => {
+    const req = tx.objectStore(STORE).put({ 
       hash, 
       arrayBuffer, 
       mimeType,
       ext,
       metadata
     });
-  } catch (err) {
-    console.error('Cache error:', err);
-  }
+    req.onsuccess = () => {
+      console.log('Stored in DB:', hash.substring(0, 8));
+      resolve();
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 
 async function handleDBOperation(operation, data) {
@@ -61,14 +70,20 @@ async function handleDBOperation(operation, data) {
         const tx = db.transaction(STORE, "readonly");
         const req = tx.objectStore(STORE).getAll();
         req.onsuccess = () => {
-          // Convert arrayBuffers back to base64 for message passing
-          const images = req.result.map(img => ({
-            hash: img.hash,
-            base64: arrayBufferToBase64(img.arrayBuffer),
-            mimeType: img.mimeType,
-            ext: img.ext,
-            metadata: img.metadata || {}
-          }));
+          console.log('Retrieved from DB:', req.result.length, 'images');
+          
+          // Convert arrayBuffers back to base64 - THIS WAS THE BUG
+          const images = req.result.map(img => {
+            const base64 = arrayBufferToBase64(img.arrayBuffer);
+            console.log('Converted image:', img.hash.substring(0, 8), 'base64 length:', base64.length);
+            return {
+              hash: img.hash,
+              base64,
+              mimeType: img.mimeType,
+              ext: img.ext,
+              metadata: img.metadata || {}
+            };
+          });
           resolve({ success: true, images });
         };
         req.onerror = () => resolve({ success: false, images: [] });
@@ -89,11 +104,19 @@ async function handleDBOperation(operation, data) {
   }
 }
 
+// FIX: Process in chunks to avoid call stack exceeded
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
+  const chunkSize = 32768; // 32KB chunks
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    // Use apply with spread to avoid call stack issues
+    binary += String.fromCharCode(...chunk);
   }
+  
   return btoa(binary);
 }
+
+console.log('Offscreen document loaded');

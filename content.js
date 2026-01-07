@@ -3,6 +3,7 @@
   window.__gs_collector_running = true;
 
   const VISITED_KEY = "__gs_pages_visited";
+  let extensionInvalidated = false;
 
   /* ---------- Hashing ---------- */
 
@@ -13,11 +14,30 @@
       .join("");
   }
 
+  /* ---------- Check if extension is still valid ---------- */
+  
+  function isExtensionValid() {
+    if (extensionInvalidated) return false;
+    try {
+      // This will throw if extension context is invalidated
+      chrome.runtime.getURL('');
+      return true;
+    } catch {
+      extensionInvalidated = true;
+      console.warn('Extension context invalidated - please reload the page');
+      return false;
+    }
+  }
+
   /* ---------- Image Capture ---------- */
 
   async function captureImage(url, imgElement = null) {
+    if (!isExtensionValid()) return;
+    
     try {
       const res = await fetch(url, { mode: "cors", credentials: "omit" });
+      if (!res.ok) return;
+      
       const blob = await res.blob();
       const arrayBuffer = await blob.arrayBuffer();
       const hash = await sha256(arrayBuffer);
@@ -30,57 +50,79 @@
         timestamp: new Date().toISOString(),
         altText: imgElement?.alt || '',
         title: imgElement?.title || '',
-        // Extract the unique image ID from URL
         imageId: url.match(/\/([^\/=]+)(?:=|$)/)?.[1] || hash.substring(0, 16)
       };
       
-      // Send arrayBuffer instead of blob (can be cloned in messages)
+      // Check again before sending
+      if (!isExtensionValid()) return;
+      
       chrome.runtime.sendMessage({
         type: 'CACHE_IMAGE',
         data: {
-          url,
           hash,
           arrayBuffer,
           mimeType: blob.type,
           ext: blob.type.split("/")[1] || "jpg",
           metadata
         }
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          if (!chrome.runtime.lastError.message.includes('context invalidated')) {
+            console.warn('Failed to cache:', chrome.runtime.lastError.message);
+          }
+          extensionInvalidated = true;
+        } else {
+          console.log('✓ Cached:', metadata.imageId);
+        }
       });
       
-      console.log('Cached image:', metadata.imageId, 'from:', metadata.pageTitle);
     } catch (err) {
-      console.warn('Failed to cache image:', url, err);
+      if (!err.message.includes('context invalidated')) {
+        console.warn('✗ Failed:', url.substring(0, 50), err.message);
+      }
     }
   }
 
   /* ---------- Observe Resource Loads ---------- */
 
+  const capturedUrls = new Set();
+
   new PerformanceObserver(list => {
+    if (!isExtensionValid()) return;
+    
     for (const entry of list.getEntries()) {
-      if (entry.name.includes("lh3.googleusercontent.com")) {
-        // Get full resolution by removing size parameter
+      if (entry.name.includes("googleusercontent.com") && 
+          (entry.name.includes("lh3") || entry.name.includes("sitesv"))) {
         const fullUrl = entry.name.split("=")[0] + "=s0";
-        captureImage(fullUrl);
+        if (!capturedUrls.has(fullUrl)) {
+          capturedUrls.add(fullUrl);
+          captureImage(fullUrl);
+        }
       }
     }
   }).observe({ entryTypes: ["resource"] });
 
-  /* ---------- Also capture IMG elements directly ---------- */
+  /* ---------- Capture IMG elements directly ---------- */
 
   function captureExistingImages() {
+    if (!isExtensionValid()) return;
+    
     const images = document.querySelectorAll('img[src*="googleusercontent.com"]');
     images.forEach(img => {
       if (img.src && img.src.includes("googleusercontent.com")) {
         const fullUrl = img.src.split("=")[0] + "=s0";
-        captureImage(fullUrl, img);
+        if (!capturedUrls.has(fullUrl)) {
+          capturedUrls.add(fullUrl);
+          captureImage(fullUrl, img);
+        }
       }
     });
   }
 
-  // Capture images immediately
+  // Initial capture
   setTimeout(captureExistingImages, 1000);
 
-  // Observe DOM changes for lazy-loaded images
+  // Observe DOM changes
   const observer = new MutationObserver(() => {
     captureExistingImages();
   });
@@ -96,13 +138,17 @@
     let y = 0;
     const step = 900;
 
-    const i = setInterval(() => {
+    const interval = setInterval(() => {
+      if (!isExtensionValid()) {
+        clearInterval(interval);
+        return;
+      }
+      
       y += step;
       window.scrollTo(0, y);
       if (y >= document.body.scrollHeight) {
-        clearInterval(i);
-        // Capture any remaining images after scroll completes
-        setTimeout(captureExistingImages, 1000);
+        clearInterval(interval);
+        setTimeout(captureExistingImages, 1500);
       }
     }, 700);
   }
@@ -136,21 +182,26 @@
   }
 
   async function crawlPages() {
+    if (!isExtensionValid()) return;
+    
     const visited = new Set(getVisited());
     const links = collectInternalLinks();
 
     for (const link of links) {
+      if (!isExtensionValid()) break;
       if (visited.has(link)) continue;
 
       visited.add(link);
       setVisited([...visited]);
 
       history.pushState(null, "", link);
-      await new Promise(r => setTimeout(r, 2200));
+      await new Promise(r => setTimeout(r, 2500));
       scrollPage();
-      await new Promise(r => setTimeout(r, 1800));
+      await new Promise(r => setTimeout(r, 2000));
     }
   }
 
   crawlPages();
+  
+  console.log('Google Sites Image Collector active');
 })();
