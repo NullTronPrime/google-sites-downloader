@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Google Sites Image Collector",
-  "version": "3.1",
+  "version": "3.2",
   "description": "Crawls all Google Sites pages, caches images immediately, and downloads them on demand",
   "permissions": [
     "downloads",

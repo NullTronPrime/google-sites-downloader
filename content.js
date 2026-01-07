@@ -19,21 +19,24 @@
     try {
       const res = await fetch(url, { mode: "cors", credentials: "omit" });
       const blob = await res.blob();
-      const buffer = await blob.arrayBuffer();
-      const hash = await sha256(buffer);
+      const arrayBuffer = await blob.arrayBuffer();
+      const hash = await sha256(arrayBuffer);
       
-      // Send to background to cache in offscreen document
+      // Send arrayBuffer instead of blob (can be cloned in messages)
       chrome.runtime.sendMessage({
         type: 'CACHE_IMAGE',
         data: {
           url,
           hash,
-          blob,
+          arrayBuffer,
+          mimeType: blob.type,
           ext: blob.type.split("/")[1] || "jpg"
         }
       });
+      
+      console.log('Cached image:', url);
     } catch (err) {
-      // silently ignore failed fetches
+      console.warn('Failed to cache image:', url, err);
     }
   }
 
@@ -41,11 +44,38 @@
 
   new PerformanceObserver(list => {
     for (const entry of list.getEntries()) {
-      if (entry.name.includes("lh3.googleusercontent.com/sitesv")) {
-        captureImage(entry.name.split("=")[0] + "=s0");
+      if (entry.name.includes("lh3.googleusercontent.com")) {
+        // Get full resolution by removing size parameter
+        const fullUrl = entry.name.split("=")[0] + "=s0";
+        captureImage(fullUrl);
       }
     }
   }).observe({ entryTypes: ["resource"] });
+
+  /* ---------- Also capture IMG elements directly ---------- */
+
+  function captureExistingImages() {
+    const images = document.querySelectorAll('img[src*="googleusercontent.com"]');
+    images.forEach(img => {
+      if (img.src && img.src.includes("googleusercontent.com")) {
+        const fullUrl = img.src.split("=")[0] + "=s0";
+        captureImage(fullUrl);
+      }
+    });
+  }
+
+  // Capture images immediately
+  setTimeout(captureExistingImages, 1000);
+
+  // Observe DOM changes for lazy-loaded images
+  const observer = new MutationObserver(() => {
+    captureExistingImages();
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
 
   /* ---------- Force Lazy Loading ---------- */
 
@@ -58,6 +88,8 @@
       window.scrollTo(0, y);
       if (y >= document.body.scrollHeight) {
         clearInterval(i);
+        // Capture any remaining images after scroll completes
+        setTimeout(captureExistingImages, 1000);
       }
     }, 700);
   }

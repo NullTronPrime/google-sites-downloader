@@ -26,11 +26,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function cacheImage({ url, hash, blob, ext }) {
+async function cacheImage({ url, hash, arrayBuffer, mimeType, ext }) {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE, "readwrite");
-    await tx.objectStore(STORE).put({ hash, blob, ext });
+    // Store as arrayBuffer to preserve binary data
+    await tx.objectStore(STORE).put({ 
+      hash, 
+      arrayBuffer, 
+      mimeType,
+      ext 
+    });
   } catch (err) {
     console.error('Cache error:', err);
   }
@@ -53,7 +59,16 @@ async function handleDBOperation(operation, data) {
       return new Promise((resolve) => {
         const tx = db.transaction(STORE, "readonly");
         const req = tx.objectStore(STORE).getAll();
-        req.onsuccess = () => resolve({ success: true, images: req.result });
+        req.onsuccess = () => {
+          // Convert arrayBuffers back to base64 for message passing
+          const images = req.result.map(img => ({
+            hash: img.hash,
+            base64: arrayBufferToBase64(img.arrayBuffer),
+            mimeType: img.mimeType,
+            ext: img.ext
+          }));
+          resolve({ success: true, images });
+        };
         req.onerror = () => resolve({ success: false, images: [] });
       });
     }
@@ -70,4 +85,13 @@ async function handleDBOperation(operation, data) {
     console.error('DB operation error:', err);
     return { success: false, error: err.message };
   }
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }

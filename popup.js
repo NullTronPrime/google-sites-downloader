@@ -13,6 +13,15 @@ async function updateCount() {
   document.getElementById("count").textContent = `Images cached: ${count}`;
 }
 
+function base64ToBlob(base64, mimeType) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
 document.getElementById("download").addEventListener("click", async () => {
   const status = document.getElementById("status");
   status.textContent = "Preparing download...";
@@ -25,7 +34,9 @@ document.getElementById("download").addEventListener("click", async () => {
   }
   
   let i = 1;
-  for (const { blob, ext } of result.images) {
+  for (const { base64, mimeType, ext } of result.images) {
+    // Convert base64 back to blob
+    const blob = base64ToBlob(base64, mimeType);
     const url = URL.createObjectURL(blob);
     
     await chrome.downloads.download({
