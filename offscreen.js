@@ -26,7 +26,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function cacheImage({ url, hash, arrayBuffer, mimeType, ext }) {
+async function cacheImage({ url, hash, arrayBuffer, mimeType, ext, metadata }) {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE, "readwrite");
@@ -35,7 +35,8 @@ async function cacheImage({ url, hash, arrayBuffer, mimeType, ext }) {
       hash, 
       arrayBuffer, 
       mimeType,
-      ext 
+      ext,
+      metadata
     });
   } catch (err) {
     console.error('Cache error:', err);
@@ -65,7 +66,8 @@ async function handleDBOperation(operation, data) {
             hash: img.hash,
             base64: arrayBufferToBase64(img.arrayBuffer),
             mimeType: img.mimeType,
-            ext: img.ext
+            ext: img.ext,
+            metadata: img.metadata || {}
           }));
           resolve({ success: true, images });
         };

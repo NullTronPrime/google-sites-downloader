@@ -15,12 +15,24 @@
 
   /* ---------- Image Capture ---------- */
 
-  async function captureImage(url) {
+  async function captureImage(url, imgElement = null) {
     try {
       const res = await fetch(url, { mode: "cors", credentials: "omit" });
       const blob = await res.blob();
       const arrayBuffer = await blob.arrayBuffer();
       const hash = await sha256(arrayBuffer);
+      
+      // Extract metadata
+      const metadata = {
+        originalUrl: url,
+        pageUrl: window.location.href,
+        pageTitle: document.title,
+        timestamp: new Date().toISOString(),
+        altText: imgElement?.alt || '',
+        title: imgElement?.title || '',
+        // Extract the unique image ID from URL
+        imageId: url.match(/\/([^\/=]+)(?:=|$)/)?.[1] || hash.substring(0, 16)
+      };
       
       // Send arrayBuffer instead of blob (can be cloned in messages)
       chrome.runtime.sendMessage({
@@ -30,11 +42,12 @@
           hash,
           arrayBuffer,
           mimeType: blob.type,
-          ext: blob.type.split("/")[1] || "jpg"
+          ext: blob.type.split("/")[1] || "jpg",
+          metadata
         }
       });
       
-      console.log('Cached image:', url);
+      console.log('Cached image:', metadata.imageId, 'from:', metadata.pageTitle);
     } catch (err) {
       console.warn('Failed to cache image:', url, err);
     }
@@ -59,7 +72,7 @@
     images.forEach(img => {
       if (img.src && img.src.includes("googleusercontent.com")) {
         const fullUrl = img.src.split("=")[0] + "=s0";
-        captureImage(fullUrl);
+        captureImage(fullUrl, img);
       }
     });
   }

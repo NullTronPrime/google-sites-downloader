@@ -34,19 +34,26 @@ document.getElementById("download").addEventListener("click", async () => {
   }
   
   let i = 1;
-  for (const { base64, mimeType, ext } of result.images) {
+  for (const { base64, mimeType, ext, metadata } of result.images) {
     // Convert base64 back to blob
     const blob = base64ToBlob(base64, mimeType);
     const url = URL.createObjectURL(blob);
     
+    // Use page title and image ID for better filename
+    const pageSlug = metadata?.pageTitle 
+      ? metadata.pageTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 30)
+      : 'google-site';
+    const imageId = metadata?.imageId?.substring(0, 8) || String(i).padStart(3, "0");
+    
     await chrome.downloads.download({
       url,
-      filename: `google-site-image-${String(i++).padStart(3, "0")}.${ext}`,
+      filename: `${pageSlug}-${imageId}.${ext}`,
       saveAs: false
     });
     
     // Clean up blob URL after download starts
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    i++;
   }
   
   status.textContent = `Started downloading ${result.images.length} images!`;
