@@ -48,8 +48,37 @@ function base64ToBlob(base64, mimeType) {
 }
 
 function sanitize(str) {
-  if (!str) return 'unnamed';
-  return str.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase().substring(0, 50);
+  if (!str) return '';
+  return str
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+    .substring(0, 50);
+}
+
+function buildFilename(metadata, ext, index) {
+  const parts = [];
+  
+  // Add descriptive text (alt, caption, section)
+  const description = metadata.altText || metadata.figcaption || metadata.parentSection || '';
+  if (description) {
+    parts.push(sanitize(description));
+  }
+  
+  // Add image ID
+  if (metadata.imageId) {
+    parts.push(metadata.imageId.substring(0, 12));
+  } else {
+    parts.push(`img-${index}`);
+  }
+  
+  // Add image type if known
+  if (metadata.imageType && metadata.imageType !== 'unknown') {
+    parts.push(metadata.imageType);
+  }
+  
+  const filename = parts.join('_') || `image-${index}`;
+  return `${filename}.${ext}`;
 }
 
 document.getElementById("download").addEventListener("click", async () => {
@@ -58,36 +87,71 @@ document.getElementById("download").addEventListener("click", async () => {
   
   try {
     status.textContent = "Loading images...";
-    const images = await getAllImages();
+    const allImages = await getAllImages();
     
-    if (!images || images.length === 0) {
+    if (!allImages || allImages.length === 0) {
       status.textContent = "No images found.";
       return;
     }
     
+    // Deduplicate by hash (keep only first occurrence)
+    const seenHashes = new Set();
+    const images = allImages.filter(img => {
+      if (seenHashes.has(img.hash)) {
+        console.log('Skipping duplicate:', img.hash.substring(0, 8));
+        return false;
+      }
+      seenHashes.add(img.hash);
+      return true;
+    });
+    
+    status.textContent = `Deduped to ${images.length} unique images...`;
+    await new Promise(r => setTimeout(r, 500));
+    
     status.textContent = `Creating ZIP...`;
     const zip = new JSZip();
     
-    // Group by page
-    const byPage = {};
+    // Group by site → page
+    const hierarchy = {};
     images.forEach(img => {
-      const folder = sanitize(img.metadata?.pageTitle || 'uncategorized');
-      if (!byPage[folder]) byPage[folder] = [];
-      byPage[folder].push(img);
+      const siteName = sanitize(img.metadata?.siteName || 'unknown-site');
+      const pagePath = sanitize(img.metadata?.pagePath || 'home');
+      
+      if (!hierarchy[siteName]) hierarchy[siteName] = {};
+      if (!hierarchy[siteName][pagePath]) hierarchy[siteName][pagePath] = [];
+      
+      hierarchy[siteName][pagePath].push(img);
     });
     
-    // Add to ZIP
+    // Build ZIP structure: site/page/image-with-metadata.ext
     let added = 0;
-    for (const [folderName, folderImages] of Object.entries(byPage)) {
-      const folder = zip.folder(folderName);
-      for (const img of folderImages) {
-        if (!img.base64) continue;
-        const blob = base64ToBlob(img.base64, img.mimeType);
-        const imageId = img.metadata?.imageId?.substring(0, 8) || img.hash.substring(0, 8);
-        const filename = `${imageId}.${img.ext}`;
-        folder.file(filename, blob);
-        added++;
-        progress.textContent = `Added ${added}/${images.length}...`;
+    let index = 1;
+    
+    for (const [siteName, pages] of Object.entries(hierarchy)) {
+      const siteFolder = zip.folder(siteName);
+      
+      for (const [pagePath, pageImages] of Object.entries(pages)) {
+        const pageFolder = siteFolder.folder(pagePath);
+        
+        for (const img of pageImages) {
+          if (!img.base64 || img.base64.length === 0) {
+            console.error('Empty base64 for:', img.hash.substring(0, 8));
+            continue;
+          }
+          
+          const blob = base64ToBlob(img.base64, img.mimeType);
+          if (blob.size === 0) {
+            console.error('Blob is 0 bytes for:', img.hash.substring(0, 8));
+            continue;
+          }
+          
+          const filename = buildFilename(img.metadata, img.ext, index);
+          pageFolder.file(filename, blob);
+          
+          added++;
+          index++;
+          progress.textContent = `Added ${added}/${images.length}...`;
+        }
       }
     }
     
@@ -97,7 +161,10 @@ document.getElementById("download").addEventListener("click", async () => {
       return;
     }
     
-    status.textContent = "Generating ZIP...";
+    const siteCount = Object.keys(hierarchy).length;
+    const pageCount = Object.values(hierarchy).reduce((sum, pages) => sum + Object.keys(pages).length, 0);
+    
+    status.textContent = `Generating ZIP (${siteCount} sites, ${pageCount} pages)...`;
     const zipBlob = await zip.generateAsync({
       type: "blob",
       compression: "DEFLATE",
@@ -117,13 +184,13 @@ document.getElementById("download").addEventListener("click", async () => {
       if (chrome.runtime.lastError) {
         status.textContent = "Download failed";
       } else {
-        status.textContent = `✓ Downloaded ${added} images!`;
+        status.textContent = `✓ ${added} images (${siteCount} sites, ${pageCount} pages)`;
       }
       progress.textContent = "";
       setTimeout(() => {
         URL.revokeObjectURL(url);
         status.textContent = "";
-      }, 3000);
+      }, 5000);
     });
     
   } catch (err) {

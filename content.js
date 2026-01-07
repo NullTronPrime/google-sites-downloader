@@ -23,6 +23,64 @@
     }
   }
 
+  function extractMetadata(url, imgElement) {
+    // Extract site name from URL
+    const urlObj = new URL(window.location.href);
+    const pathParts = urlObj.pathname.split('/').filter(p => p);
+    const siteName = pathParts[1] || 'unknown-site'; // Usually sites.google.com/view/site-name
+    const pagePath = pathParts.slice(2).join('/') || 'home';
+    
+    // Extract image ID and type from URL
+    const imageId = url.match(/\/([A-Za-z0-9_-]{16,})(?:=|$)/)?.[1] || '';
+    let imageType = 'unknown';
+    if (imageId.startsWith('AF1Qip')) imageType = 'maps-review';
+    else if (imageId.startsWith('AOh14G')) imageType = 'profile';
+    else if (url.includes('sitesv')) imageType = 'sites';
+    
+    // Get image context from DOM
+    let altText = '';
+    let titleAttr = '';
+    let ariaLabel = '';
+    let figcaption = '';
+    let parentSection = '';
+    
+    if (imgElement) {
+      altText = imgElement.alt || '';
+      titleAttr = imgElement.title || '';
+      ariaLabel = imgElement.getAttribute('aria-label') || '';
+      
+      // Get caption if in figure
+      const figure = imgElement.closest('figure');
+      if (figure) {
+        const caption = figure.querySelector('figcaption');
+        if (caption) figcaption = caption.textContent.trim();
+      }
+      
+      // Get parent section/header context
+      const section = imgElement.closest('section, article, div[role="region"]');
+      if (section) {
+        const heading = section.querySelector('h1, h2, h3, h4, h5, h6');
+        if (heading) parentSection = heading.textContent.trim();
+      }
+    }
+    
+    return {
+      siteName,
+      pagePath,
+      pageUrl: window.location.href,
+      pageTitle: document.title.substring(0, 100),
+      imageId: imageId.substring(0, 16),
+      imageType,
+      altText: altText.substring(0, 100),
+      titleAttr: titleAttr.substring(0, 100),
+      ariaLabel: ariaLabel.substring(0, 100),
+      figcaption: figcaption.substring(0, 100),
+      parentSection: parentSection.substring(0, 100),
+      timestamp: new Date().toISOString(),
+      originalUrl: url
+    };
+  }
+
   async function captureImage(url, imgElement = null) {
     if (!isExtensionValid()) return;
     
@@ -34,22 +92,14 @@
       const arrayBuffer = await blob.arrayBuffer();
       const hash = await sha256(arrayBuffer);
       
-      // Convert to base64 HERE to avoid corruption
+      // Convert to base64
       const reader = new FileReader();
       const base64 = await new Promise((resolve) => {
         reader.onloadend = () => resolve(reader.result.split(',')[1]);
         reader.readAsDataURL(blob);
       });
       
-      const metadata = {
-        originalUrl: url,
-        pageUrl: window.location.href,
-        pageTitle: document.title,
-        timestamp: new Date().toISOString(),
-        altText: imgElement?.alt || '',
-        title: imgElement?.title || '',
-        imageId: url.match(/\/([^\/=]+)(?:=|$)/)?.[1] || hash.substring(0, 16)
-      };
+      const metadata = extractMetadata(url, imgElement);
       
       if (!isExtensionValid()) return;
       
@@ -57,7 +107,7 @@
         type: 'CACHE_IMAGE',
         data: {
           hash,
-          base64,  // Send base64 string, NOT arrayBuffer
+          base64,
           mimeType: blob.type,
           ext: blob.type.split("/")[1] || "jpg",
           metadata
@@ -69,7 +119,7 @@
           }
           extensionInvalidated = true;
         } else {
-          console.log('✓ Cached:', metadata.imageId);
+          console.log('✓ Cached:', metadata.siteName, '/', metadata.pagePath, '/', metadata.imageId);
         }
       });
       
