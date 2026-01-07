@@ -55,7 +55,7 @@ async function cacheImage({ hash, arrayBuffer, mimeType, ext, metadata }) {
     });
     
     req.onsuccess = () => {
-      console.log('✓ Stored:', hash.substring(0, 8), arrayBuffer.byteLength, 'bytes');
+      console.log('✓ Stored:', hash.substring(0, 8), arrayBuffer.byteLength, 'bytes', mimeType);
       resolve({ success: true });
     };
     req.onerror = () => {
@@ -91,7 +91,6 @@ async function handleDBOperation(operation, data) {
         try {
           const images = [];
           
-          // Convert each image to base64
           for (const img of req.result) {
             if (!img.arrayBuffer || img.arrayBuffer.byteLength === 0) {
               console.error('Empty arrayBuffer for:', img.hash.substring(0, 8));
@@ -99,14 +98,15 @@ async function handleDBOperation(operation, data) {
             }
             
             try {
-              const base64 = await arrayBufferToBase64(img.arrayBuffer);
+              const base64 = await arrayBufferToBase64(img.arrayBuffer, img.mimeType);
               if (!base64 || base64.length === 0) {
                 console.error('Failed to convert to base64:', img.hash.substring(0, 8));
                 continue;
               }
               
               console.log('✓ Converted:', img.hash.substring(0, 8), 
-                         'arrayBuffer:', img.arrayBuffer.byteLength, 
+                         'arrayBuffer:', img.arrayBuffer.byteLength,
+                         'mimeType:', img.mimeType,
                          'base64:', base64.length);
               
               images.push({
@@ -121,6 +121,7 @@ async function handleDBOperation(operation, data) {
             }
           }
           
+          console.log('Returning', images.length, 'converted images');
           resolve({ success: true, images });
         } catch (err) {
           console.error('Conversion error:', err);
@@ -150,21 +151,34 @@ async function handleDBOperation(operation, data) {
   return { success: false, error: 'Unknown operation' };
 }
 
-// Use FileReader for reliable base64 conversion
-async function arrayBufferToBase64(arrayBuffer) {
+// Use FileReader with proper MIME type
+async function arrayBufferToBase64(arrayBuffer, mimeType) {
   return new Promise((resolve, reject) => {
     try {
-      const blob = new Blob([arrayBuffer]);
+      // Create blob with proper MIME type
+      const blob = new Blob([arrayBuffer], { type: mimeType || 'image/jpeg' });
       const reader = new FileReader();
       
       reader.onloadend = () => {
-        if (reader.result && reader.result.includes(',')) {
-          const base64 = reader.result.split(',')[1];
-          resolve(base64);
-        } else {
-          console.error('Invalid FileReader result');
+        const dataUrl = reader.result;
+        
+        if (!dataUrl || typeof dataUrl !== 'string') {
+          console.error('Invalid FileReader result:', typeof dataUrl);
           resolve('');
+          return;
         }
+        
+        // Data URL format: "data:image/jpeg;base64,/9j/4AAQ..."
+        const parts = dataUrl.split(',');
+        if (parts.length !== 2) {
+          console.error('Invalid data URL format:', dataUrl.substring(0, 50));
+          resolve('');
+          return;
+        }
+        
+        const base64 = parts[1];
+        console.log('FileReader success - base64 length:', base64.length);
+        resolve(base64);
       };
       
       reader.onerror = () => {
