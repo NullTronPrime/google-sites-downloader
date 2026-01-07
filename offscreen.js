@@ -81,38 +81,44 @@ async function handleDBOperation(operation, data) {
   }
   
   if (operation === 'getAll') {
-    return new Promise((resolve) => {
+    return new Promise(async (resolve) => {
       const tx = db.transaction(STORE, "readonly");
       const req = tx.objectStore(STORE).getAll();
       
-      req.onsuccess = () => {
+      req.onsuccess = async () => {
         console.log('Retrieved from DB:', req.result.length, 'images');
         
         try {
           const images = [];
+          
+          // Convert each image to base64
           for (const img of req.result) {
             if (!img.arrayBuffer || img.arrayBuffer.byteLength === 0) {
               console.error('Empty arrayBuffer for:', img.hash.substring(0, 8));
               continue;
             }
             
-            const base64 = arrayBufferToBase64(img.arrayBuffer);
-            if (!base64 || base64.length === 0) {
-              console.error('Failed to convert to base64:', img.hash.substring(0, 8));
-              continue;
+            try {
+              const base64 = await arrayBufferToBase64(img.arrayBuffer);
+              if (!base64 || base64.length === 0) {
+                console.error('Failed to convert to base64:', img.hash.substring(0, 8));
+                continue;
+              }
+              
+              console.log('✓ Converted:', img.hash.substring(0, 8), 
+                         'arrayBuffer:', img.arrayBuffer.byteLength, 
+                         'base64:', base64.length);
+              
+              images.push({
+                hash: img.hash,
+                base64,
+                mimeType: img.mimeType,
+                ext: img.ext,
+                metadata: img.metadata || {}
+              });
+            } catch (convErr) {
+              console.error('Conversion failed for', img.hash.substring(0, 8), convErr);
             }
-            
-            console.log('✓ Converted:', img.hash.substring(0, 8), 
-                       'arrayBuffer:', img.arrayBuffer.byteLength, 
-                       'base64:', base64.length);
-            
-            images.push({
-              hash: img.hash,
-              base64,
-              mimeType: img.mimeType,
-              ext: img.ext,
-              metadata: img.metadata || {}
-            });
           }
           
           resolve({ success: true, images });
@@ -144,36 +150,34 @@ async function handleDBOperation(operation, data) {
   return { success: false, error: 'Unknown operation' };
 }
 
-// Fixed base64 conversion that handles large images
-function arrayBufferToBase64(arrayBuffer) {
-  try {
-    const bytes = new Uint8Array(arrayBuffer);
-    const len = bytes.length;
-    
-    if (len === 0) {
-      console.error('Empty arrayBuffer');
-      return '';
-    }
-    
-    // Use chunks to avoid maximum call stack size exceeded
-    const chunkSize = 8192;
-    let binary = '';
-    
-    for (let i = 0; i < len; i += chunkSize) {
-      const end = Math.min(i + chunkSize, len);
-      const chunk = bytes.subarray(i, end);
+// Use FileReader for reliable base64 conversion
+async function arrayBufferToBase64(arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    try {
+      const blob = new Blob([arrayBuffer]);
+      const reader = new FileReader();
       
-      // Convert chunk to binary string
-      for (let j = 0; j < chunk.length; j++) {
-        binary += String.fromCharCode(chunk[j]);
-      }
+      reader.onloadend = () => {
+        if (reader.result && reader.result.includes(',')) {
+          const base64 = reader.result.split(',')[1];
+          resolve(base64);
+        } else {
+          console.error('Invalid FileReader result');
+          resolve('');
+        }
+      };
+      
+      reader.onerror = () => {
+        console.error('FileReader error:', reader.error);
+        resolve('');
+      };
+      
+      reader.readAsDataURL(blob);
+    } catch (err) {
+      console.error('Base64 conversion error:', err);
+      resolve('');
     }
-    
-    return btoa(binary);
-  } catch (err) {
-    console.error('Base64 conversion error:', err);
-    return '';
-  }
+  });
 }
 
 console.log('Offscreen document loaded');
