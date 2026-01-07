@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Google Sites Image Collector",
-  "version": "3.0",
+  "version": "3.1",
   "description": "Crawls all Google Sites pages, caches images immediately, and downloads them on demand",
   "permissions": [
     "downloads",
-    "storage"
+    "offscreen",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://sites.google.com/*",

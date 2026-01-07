@@ -1,46 +1,59 @@
-const DB_NAME = "gs-image-cache";
-const STORE = "images";
-
-function openDB() {
-  return new Promise(resolve => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onsuccess = () => resolve(req.result);
+async function dbOperation(operation, data = null) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: 'DB_OPERATION', operation, data },
+      response => resolve(response || { success: false })
+    );
   });
 }
 
 async function updateCount() {
-  const db = await openDB();
-  const tx = db.transaction(STORE, "readonly");
-  const store = tx.objectStore(STORE);
-  const req = store.count();
-
-  req.onsuccess = () => {
-    document.getElementById("count").textContent =
-      `Images cached: ${req.result}`;
-  };
+  const result = await dbOperation('count');
+  const count = result.success ? result.count : 0;
+  document.getElementById("count").textContent = `Images cached: ${count}`;
 }
 
 document.getElementById("download").addEventListener("click", async () => {
-  const db = await openDB();
-  const tx = db.transaction(STORE, "readonly");
-  const store = tx.objectStore(STORE);
-
+  const status = document.getElementById("status");
+  status.textContent = "Preparing download...";
+  
+  const result = await dbOperation('getAll');
+  
+  if (!result.success || !result.images || result.images.length === 0) {
+    status.textContent = "No images found. Visit a Google Site first.";
+    return;
+  }
+  
   let i = 1;
-  store.openCursor().onsuccess = e => {
-    const cursor = e.target.result;
-    if (!cursor) return;
-
-    const { blob, ext } = cursor.value;
+  for (const { blob, ext } of result.images) {
     const url = URL.createObjectURL(blob);
-
-    chrome.downloads.download({
+    
+    await chrome.downloads.download({
       url,
       filename: `google-site-image-${String(i++).padStart(3, "0")}.${ext}`,
       saveAs: false
     });
+    
+    // Clean up blob URL after download starts
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  
+  status.textContent = `Started downloading ${result.images.length} images!`;
+  setTimeout(() => status.textContent = "", 3000);
+});
 
-    cursor.continue();
-  };
+document.getElementById("clear").addEventListener("click", async () => {
+  const status = document.getElementById("status");
+  const result = await dbOperation('clear');
+  
+  if (result.success) {
+    status.textContent = "Cache cleared!";
+    updateCount();
+  } else {
+    status.textContent = "Failed to clear cache.";
+  }
+  
+  setTimeout(() => status.textContent = "", 3000);
 });
 
 updateCount();

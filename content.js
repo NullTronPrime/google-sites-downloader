@@ -2,27 +2,7 @@
   if (window.__gs_collector_running) return;
   window.__gs_collector_running = true;
 
-  const DB_NAME = "gs-image-cache";
-  const STORE = "images";
   const VISITED_KEY = "__gs_pages_visited";
-
-  /* ---------- IndexedDB ---------- */
-
-  function openDB() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
-
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE)) {
-          db.createObjectStore(STORE, { keyPath: "hash" });
-        }
-      };
-
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
 
   /* ---------- Hashing ---------- */
 
@@ -41,15 +21,18 @@
       const blob = await res.blob();
       const buffer = await blob.arrayBuffer();
       const hash = await sha256(buffer);
-
-      const db = await openDB();
-      const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put({
-        hash,
-        blob,
-        ext: blob.type.split("/")[1] || "jpg"
+      
+      // Send to background to cache in offscreen document
+      chrome.runtime.sendMessage({
+        type: 'CACHE_IMAGE',
+        data: {
+          url,
+          hash,
+          blob,
+          ext: blob.type.split("/")[1] || "jpg"
+        }
       });
-    } catch (_) {
+    } catch (err) {
       // silently ignore failed fetches
     }
   }
