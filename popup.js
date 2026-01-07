@@ -1,109 +1,187 @@
-async function dbOperation(operation, data = null) {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(
-      { type: 'DB_OPERATION', operation, data },
-      response => {
-        if (chrome.runtime.lastError) {
-          console.error('DB operation error:', chrome.runtime.lastError);
-        }
-        resolve(response || { success: false });
+const DB_NAME = "gs-image-cache";
+const STORE = "images";
+
+// Open IndexedDB directly in the popup
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: "hash" });
       }
-    );
+    };
+
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
 }
 
 async function updateCount() {
-  const result = await dbOperation('count');
-  const count = result.success ? result.count : 0;
-  document.getElementById("count").textContent = `Images cached: ${count}`;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).count();
+    
+    req.onsuccess = () => {
+      document.getElementById("count").textContent = `Images cached: ${req.result}`;
+    };
+  } catch (err) {
+    console.error('Count error:', err);
+    document.getElementById("count").textContent = "Images cached: 0";
+  }
 }
 
-function base64ToBlob(base64, mimeType) {
-  try {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: mimeType });
-    console.log('Created blob:', blob.size, 'bytes, type:', mimeType);
-    return blob;
-  } catch (err) {
-    console.error('Failed to create blob:', err);
-    return null;
-  }
+async function getAllImages() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).getAll();
+    
+    req.onsuccess = () => {
+      console.log('Loaded from IndexedDB:', req.result.length, 'images');
+      resolve(req.result);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function sanitizeFilename(str) {
+  if (!str) return 'unnamed';
+  return str
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+    .substring(0, 50);
 }
 
 document.getElementById("download").addEventListener("click", async () => {
   const status = document.getElementById("status");
-  status.textContent = "Preparing download...";
+  const progress = document.getElementById("progress");
   
-  const result = await dbOperation('getAll');
-  console.log('getAll result:', result);
-  
-  if (!result.success || !result.images || result.images.length === 0) {
-    status.textContent = "No images found. Visit a Google Site first.";
-    return;
+  try {
+    status.textContent = "Loading images...";
+    const images = await getAllImages();
+    
+    if (!images || images.length === 0) {
+      status.textContent = "No images found. Visit a Google Site first.";
+      return;
+    }
+    
+    status.textContent = `Creating ZIP with ${images.length} images...`;
+    console.log('Creating ZIP with', images.length, 'images');
+    
+    const zip = new JSZip();
+    
+    // Group images by page
+    const byPage = {};
+    images.forEach(img => {
+      const pageTitle = img.metadata?.pageTitle || 'uncategorized';
+      const folder = sanitizeFilename(pageTitle);
+      if (!byPage[folder]) byPage[folder] = [];
+      byPage[folder].push(img);
+    });
+    
+    // Add images to ZIP organized by folders
+    let processed = 0;
+    for (const [folderName, folderImages] of Object.entries(byPage)) {
+      const folder = zip.folder(folderName);
+      
+      for (const img of folderImages) {
+        if (!img.arrayBuffer || img.arrayBuffer.byteLength === 0) {
+          console.error('Empty arrayBuffer for:', img.hash.substring(0, 8));
+          continue;
+        }
+        
+        // Create blob from arrayBuffer
+        const blob = new Blob([img.arrayBuffer], { type: img.mimeType });
+        
+        // Generate filename
+        const imageId = img.metadata?.imageId?.substring(0, 8) || img.hash.substring(0, 8);
+        const altText = img.metadata?.altText || img.metadata?.figcaption || '';
+        const desc = altText ? sanitizeFilename(altText).substring(0, 30) : '';
+        const filename = desc ? `${desc}_${imageId}.${img.ext}` : `${imageId}.${img.ext}`;
+        
+        folder.file(filename, blob);
+        processed++;
+        progress.textContent = `Added ${processed}/${images.length} images...`;
+        console.log('Added to ZIP:', filename, blob.size, 'bytes');
+      }
+    }
+    
+    if (processed === 0) {
+      status.textContent = "No valid images to download";
+      progress.textContent = "";
+      return;
+    }
+    
+    status.textContent = "Generating ZIP file...";
+    progress.textContent = "This may take a moment...";
+    
+    // Generate ZIP file
+    const zipBlob = await zip.generateAsync({
+      type: "blob",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 }
+    }, (metadata) => {
+      progress.textContent = `Compressing: ${Math.round(metadata.percent)}%`;
+    });
+    
+    console.log('ZIP created:', zipBlob.size, 'bytes');
+    
+    // Download the ZIP
+    const url = URL.createObjectURL(zipBlob);
+    const timestamp = new Date().toISOString().split('T')[0];
+    
+    chrome.downloads.download({
+      url,
+      filename: `google-sites-images-${timestamp}.zip`,
+      saveAs: false
+    }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        console.error('Download error:', chrome.runtime.lastError);
+        status.textContent = "Download failed";
+      } else {
+        status.textContent = `✓ Downloaded ${processed} images!`;
+        console.log('Download started:', downloadId);
+      }
+      progress.textContent = "";
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        status.textContent = "";
+      }, 3000);
+    });
+    
+  } catch (err) {
+    console.error('Download error:', err);
+    status.textContent = "Error: " + err.message;
+    progress.textContent = "";
   }
-  
-  let i = 1;
-  let successCount = 0;
-  
-  for (const { base64, mimeType, ext, metadata } of result.images) {
-    console.log('Processing image', i, '- base64 length:', base64?.length, 'mime:', mimeType);
-    
-    if (!base64 || base64.length === 0) {
-      console.error('Empty base64 for image', i);
-      i++;
-      continue;
-    }
-    
-    const blob = base64ToBlob(base64, mimeType);
-    if (!blob || blob.size === 0) {
-      console.error('Failed to create blob or blob is 0 bytes for image', i);
-      i++;
-      continue;
-    }
-    
-    const url = URL.createObjectURL(blob);
-    
-    const pageSlug = metadata?.pageTitle 
-      ? metadata.pageTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 30)
-      : 'google-site';
-    const imageId = metadata?.imageId?.substring(0, 8) || String(i).padStart(3, "0");
-    
-    try {
-      await chrome.downloads.download({
-        url,
-        filename: `${pageSlug}-${imageId}.${ext}`,
-        saveAs: false
-      });
-      console.log('Downloaded:', `${pageSlug}-${imageId}.${ext}`);
-      successCount++;
-    } catch (err) {
-      console.error('Download failed:', err);
-    }
-    
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    i++;
-  }
-  
-  status.textContent = `Downloaded ${successCount}/${result.images.length} images!`;
-  setTimeout(() => status.textContent = "", 3000);
 });
 
 document.getElementById("clear").addEventListener("click", async () => {
   const status = document.getElementById("status");
-  const result = await dbOperation('clear');
   
-  if (result.success) {
-    status.textContent = "Cache cleared!";
-    updateCount();
-  } else {
-    status.textContent = "Failed to clear cache.";
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE, "readwrite");
+    const req = tx.objectStore(STORE).clear();
+    
+    req.onsuccess = () => {
+      status.textContent = "Cache cleared!";
+      updateCount();
+      setTimeout(() => status.textContent = "", 3000);
+    };
+    
+    req.onerror = () => {
+      status.textContent = "Failed to clear cache";
+      setTimeout(() => status.textContent = "", 3000);
+    };
+  } catch (err) {
+    console.error('Clear error:', err);
+    status.textContent = "Error clearing cache";
   }
-  
-  setTimeout(() => status.textContent = "", 3000);
 });
 
 updateCount();
